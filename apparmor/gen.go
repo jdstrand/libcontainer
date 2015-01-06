@@ -3,6 +3,8 @@ package apparmor
 import (
 	"io"
 	"os"
+	"os/exec"
+	"strings"
 	"text/template"
 )
 
@@ -10,6 +12,11 @@ type data struct {
 	Name         string
 	Imports      []string
 	InnerImports []string
+	CommentDBusRule     string
+	CommentSignalRule   string
+	CommentPtraceRule   string
+	CommentUnixRule     string
+	CommentNetlinkRule  string
 }
 
 const baseTemplate = `
@@ -38,10 +45,10 @@ profile {{.Name}} flags=(attach_disconnected,mediate_deleted) {
 
   # This also needs additional rules to reach outside of the container via
   # DBus, so just let all of DBus within the container.
-  dbus,
+  {{.CommentDBusRule}}dbus,
 
   # Allow us to ptrace ourselves
-  ptrace peer=@{profile_name},
+  {{.CommentPtraceRule}}ptrace peer=@{profile_name},
 
   # ignore DENIED message on / remount
   deny mount options=(ro, remount) -> /,
@@ -182,6 +189,23 @@ func generateProfile(out io.Writer) error {
 	if abstrctionsEsists() {
 		data.InnerImports = append(data.InnerImports, "#include <abstractions/base>")
 	}
+	// Check capabilities of AppArmor parser and comment out rules that the
+	// the parser doesn't support.
+	if !checkDBusRule() {
+		data.CommentDBusRule = "#"
+	}
+	if !checkSignalRule() {
+		data.CommentSignalRule = "#"
+	}
+	if !checkPtraceRule() {
+		data.CommentPtraceRule = "#"
+	}
+	if !checkUnixRule() {
+		data.CommentUnixRule = "#"
+	}
+	if !checkNetlinkRule() {
+		data.CommentNetlinkRule = "#"
+	}
 	if err := compiled.Execute(out, data); err != nil {
 		return err
 	}
@@ -197,5 +221,38 @@ func tuntablesExists() bool {
 // check if abstractions/base exist
 func abstrctionsEsists() bool {
 	_, err := os.Stat("/etc/apparmor.d/abstractions/base")
+	return err == nil
+}
+
+// check if parser supports dbus rules
+func checkDBusRule() bool {
+	return checkRuleType("dbus")
+}
+
+// check if parser supports signal rules
+func checkSignalRule() bool {
+	return checkRuleType("signal")
+}
+
+// check if parser supports ptrace rules
+func checkPtraceRule() bool {
+	return checkRuleType("ptrace")
+}
+
+// check if parser supports unix rules
+func checkUnixRule() bool {
+	return checkRuleType("unix")
+}
+
+// check if parser supports netlink rules
+func checkNetlinkRule() bool {
+	return checkRuleType("network netlink")
+}
+
+// check if parser supports the rule type
+func checkRuleType(rule_type string) bool {
+	cmd := exec.Command("apparmor_parser", "-p")
+	cmd.Stdin = strings.NewReader("profile test { " + rule_type + ", }\n")
+	err := cmd.Run()
 	return err == nil
 }
